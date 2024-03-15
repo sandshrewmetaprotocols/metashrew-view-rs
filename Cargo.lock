@@ -1154,6 +1154,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "hex",
+ "itertools 0.12.1",
  "rlp",
  "rocksdb",
  "serde",

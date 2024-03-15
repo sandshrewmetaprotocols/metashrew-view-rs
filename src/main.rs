@@ -1,4 +1,4 @@
-use actix_web::{post, web, App, HttpServer, Responder, Result};
+use actix_web::{post, web, App, HttpServer, HttpResponse, Responder, Result};
 use std::collections::HashSet;
 use std::env;
 use std::fs::File;
@@ -10,22 +10,23 @@ use substring::Substring;
 use rocksdb::{DB, Options};
 use wasmtime::{Extern, Caller, Instance, Memory, MemoryType, SharedMemory, Config, Engine, Linker, Module, Store, Mutability, GlobalType, Global, Val, ValType};
 use rlp::{Rlp};
+use itertools::Itertools;
 
 #[derive(Deserialize)]
-struct JsonrpcRequest {
+struct JsonRpcRequest {
     id: u32,
     method: String,
     params: Vec<String>,
     jsonrpc: String,
 }
 #[derive(Serialize)]
-struct  JsonrpcError{
+struct  JsonRpcError{
     id: u32,
     error: String,
     jsonrpc: String,
 }
 #[derive(Serialize)]
-struct JsonrpcResult{
+struct JsonRpcResult{
     id: u32, 
     result: String,
     jsonrpc: String,
@@ -284,25 +285,25 @@ pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
   }
 
 #[post("/")]
-async fn view(body: web::Json<JsonrpcRequest>, context: web::Data<Context>) -> Result<impl Responder>{
+async fn view(body: web::Json<JsonRpcRequest>, context: web::Data<Context>) -> Result<impl Responder>{
     if body.method != "metashrew_view" {
-        let resp = JsonrpcError {id: body.id, error: "Unsupported method".to_string(), jsonrpc: "2.0".to_string() };
-        return Ok(web::Json(resp));
+        let resp = JsonRpcError {id: body.id, error: "Unsupported method".to_string(), jsonrpc: "2.0".to_string() };
+        return Ok(HttpResponse::Ok().json(resp));
     } else {
         if hex::decode(body.params[0].to_string().substring(2, (body.params[0].len() - 2))).unwrap() != context.hash {
-            let resp = JsonrpcError {id: body.id, error: "Hash doesn't match".to_string(), jsonrpc: "2.0".to_string() };
-            return Ok(web::Json(resp));
+            let resp = JsonRpcError {id: body.id, error: "Hash doesn't match".to_string(), jsonrpc: "2.0".to_string() };
+            return Ok(HttpResponse::Ok().json(resp));
         } 
         let db_path = match env::var("DB_LOCATION"){
             Ok(val) => val,
             Err(e) => "/mnt/volume/rocksdb".to_string(),
         };
-        let db = DB::open_for_read_only(&Options::default(), db_path, false).unwrap();
+        let db: &'static DB = Box::leak(Box::new(DB::open_for_read_only(&Options::default(), db_path, false).unwrap()));
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_binary(&engine, context.program.as_slice()).unwrap();
         let mut store = Store::new(&engine, ());
         let mut linker = Linker::new(&engine);
-        let block_tag = body.params[3];
+        let block_tag = &body.params[3];
         let height: i32 = match block_tag.parse() {
           Ok(v) => v,
           Err(e) => if block_tag == "latest" { 100 //FIX THIS
@@ -311,19 +312,19 @@ async fn view(body: web::Json<JsonrpcRequest>, context: web::Data<Context>) -> R
         // if height < 0 {
         //   return Ok(json!({ "error": format!("invalid block_tag: {:?}", block_tag) }));
         // }
-        let input_rlp = body.params[2];
+        let input_rlp = &body.params[2];
         let input: Vec<u8> = input_rlp.as_str().try_into().unwrap();
         setup_linker(&mut linker, &mut store, &db, &input, height as u32);
         setup_linker_view(&mut linker, &db, height);
         let instance = linker.instantiate(&mut store, &module).unwrap();
         instance.get_memory(&mut store, "memory").unwrap().grow(&mut store,  128).unwrap();
-        let symbol = body.params[2];
-        let fnc = instance.get_typed_func::<(), (i32)>(&mut store, symbol.as_str()).unwrap();
+        let symbol = body.params[2].as_str();
+        let fnc = instance.get_typed_func::<(), (i32)>(&mut store, symbol).unwrap();
         let result = fnc.call(&mut store, ()).unwrap();
         let mem = instance.get_memory(&mut store, "memory").unwrap();
         let data = mem.data(&mut store);
         let encoded_vec = read_arraybuffer_as_vec(data, result);
-        return Ok(web::Json(JsonrpcResult{id: body.id, result: hex::encode(encoded_vec), jsonrpc: "2.0".to_string()}));
+        return Ok(HttpResponse::Ok().json(JsonRpcResult{id: body.id, result: hex::encode(encoded_vec), jsonrpc: "2.0".to_string()}));
     }
 }
 
@@ -338,21 +339,21 @@ async fn main() -> std::io::Result<()>{
     let mut buf = BufReader::new(program);
     let mut bytes: Vec<u8> = vec![];
     buf.read_to_end(&mut bytes);
-    let hasher = Sha3::v256();
+    let mut hasher = Sha3::v256();
     let mut output = [0; 32];
     hasher.update(bytes.as_slice());
     hasher.finalize(&mut output);
 
-    HttpServer::new(|| {
-        App::new().app_data(web::Data::new(Context {hash: output, program: bytes})).service(view)
+    HttpServer::new(move || {
+        App::new().app_data(web::Data::new(Context {hash: output, program: bytes.clone()})).service(view)
     })
     .bind((
         match env::var("HOST"){
-            Ok(val)=> val.as_str(),
-            Err(e) => "127.0.0.1", },
+            Ok(val)=> val,
+            Err(e) => String::from("127.0.0.1"), },
         match env::var("PORT") {
             Ok(val) => val.parse::<u16>().unwrap(),
             Err(e) => 8080,
-        }))
+        }))?.run().await
 }
 

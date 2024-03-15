@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 actix-web = "4.5.1"
 hex = "0.4.3"
+itertools = "0.12.1"
 rlp = "0.5.2"
 rocksdb = "0.22.0"
 serde = { version = "1.0.197", features = ["derive"] }
