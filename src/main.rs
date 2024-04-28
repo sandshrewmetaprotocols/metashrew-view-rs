@@ -26,6 +26,13 @@ impl BatchLike for RocksDBBatch {
         return self.0.put(k, v);
     }
 }
+
+impl Clone for RocksDBRuntimeAdapter {
+  fn clone(&self) -> Self {
+    return Self(self.0);
+  }
+}
+
 impl KeyValueStoreLike for RocksDBRuntimeAdapter {
     type Batch = RocksDBBatch;
     type Error = rocksdb::Error;
